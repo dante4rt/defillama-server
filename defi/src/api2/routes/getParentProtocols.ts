@@ -75,12 +75,13 @@ export function getParentProtocolsInternal(
         meta?.tokensExcludedFromParent !== undefined;
 
       const childTvl = child.tvl;
-      // Slot may be absent during cache lag; fall back to full child TVL when
-      // meta says fully exclude, otherwise 0 (over-count beats under-count).
+      // When slot is absent (cache lag) but meta declares any exclusion,
+      // fall back to full exclusion so the `excludedFromParentTvl` flag
+      // never disagrees with the contribution counted into parent tvl.
       const slotTotalExcluded = child.chainTvls[EXCLUDE_PARENT_SLOT]?.tvl;
       const totalExcluded =
         slotTotalExcluded ??
-        (meta?.excludeTvlFromParent && childTvl !== null ? childTvl : 0);
+        (hasExclusion && childTvl !== null ? childTvl : 0);
 
       if (childTvl !== null) {
         const contribution = childTvl - totalExcluded;
@@ -92,8 +93,11 @@ export function getParentProtocolsInternal(
         const tvlValue = value?.tvl;
         if (typeof tvlValue !== "number") continue;
         const slotChainExcluded = child.chainTvls[`${chain}-${EXCLUDE_PARENT_SLOT}`]?.tvl;
+        const chainHasTokenExclusion =
+          (meta?.tokensExcludedFromParent?.[chain]?.length ?? 0) > 0;
         const chainExcluded =
-          slotChainExcluded ?? (meta?.excludeTvlFromParent ? tvlValue : 0);
+          slotChainExcluded ??
+          (meta?.excludeTvlFromParent || chainHasTokenExclusion ? tvlValue : 0);
         const contribution = tvlValue - chainExcluded;
         if (contribution > 0) chainTvls[chain] = (chainTvls[chain] ?? 0) + contribution;
       }
