@@ -1,6 +1,16 @@
 import parentProtocolsList from "../../protocols/parentProtocols";
 import type { IParentProtocol } from "../../protocols/types";
 import type { LiteProtocol } from "../../types";
+import { extraSectionsSet } from "../../utils/normalizeChain";
+
+const EXCLUDE_PARENT_SLOT = "excludeParent";
+const NULL_SYMBOL = "-";
+const SYNTHETIC_CHAIN_KEYS = new Set([
+  EXCLUDE_PARENT_SLOT,
+  "doublecounted",
+  "liquidstaking",
+  "dcAndLsOverlap",
+]);
 
 interface ChildProtocol {
   id: string;
@@ -60,34 +70,46 @@ export function getParentProtocolsInternal(
 
     for (const child of children) {
       const meta = childMetadataById.get(child.defillamaId);
-      const excludeFromParent =
+      const hasExclusion =
         meta?.excludeTvlFromParent === true ||
         meta?.tokensExcludedFromParent !== undefined;
 
       const childTvl = child.tvl;
+      // Slot may be absent during cache lag; fall back to full child TVL when
+      // meta says fully exclude, otherwise 0 (over-count beats under-count).
+      const slotTotalExcluded = child.chainTvls[EXCLUDE_PARENT_SLOT]?.tvl;
+      const totalExcluded =
+        slotTotalExcluded ??
+        (meta?.excludeTvlFromParent && childTvl !== null ? childTvl : 0);
 
-      if (!excludeFromParent) {
-        if (childTvl !== null) tvl = (tvl ?? 0) + childTvl;
-
-        for (const [chain, value] of Object.entries(child.chainTvls)) {
-          const tvlValue = value?.tvl;
-          if (typeof tvlValue !== "number") continue;
-          chainTvls[chain] = (chainTvls[chain] ?? 0) + tvlValue;
-        }
+      if (childTvl !== null) {
+        const contribution = childTvl - totalExcluded;
+        if (contribution > 0) tvl = (tvl ?? 0) + contribution;
       }
 
-      if (inferredSymbol === null && child.symbol && child.symbol !== "-") {
+      for (const [chain, value] of Object.entries(child.chainTvls)) {
+        if (chain.includes("-") || extraSectionsSet.has(chain) || SYNTHETIC_CHAIN_KEYS.has(chain)) continue;
+        const tvlValue = value?.tvl;
+        if (typeof tvlValue !== "number") continue;
+        const slotChainExcluded = child.chainTvls[`${chain}-${EXCLUDE_PARENT_SLOT}`]?.tvl;
+        const chainExcluded =
+          slotChainExcluded ?? (meta?.excludeTvlFromParent ? tvlValue : 0);
+        const contribution = tvlValue - chainExcluded;
+        if (contribution > 0) chainTvls[chain] = (chainTvls[chain] ?? 0) + contribution;
+      }
+
+      if (inferredSymbol === null && child.symbol && child.symbol !== NULL_SYMBOL) {
         inferredSymbol = child.symbol;
       }
 
       const childEntry: ChildProtocol = {
         id: child.defillamaId,
         name: child.name,
-        symbol: child.symbol && child.symbol !== "-" ? child.symbol : null,
+        symbol: child.symbol && child.symbol !== NULL_SYMBOL ? child.symbol : null,
         tvl: childTvl,
         chains: child.chains,
       };
-      if (excludeFromParent) childEntry.excludedFromParentTvl = true;
+      if (hasExclusion || totalExcluded > 0) childEntry.excludedFromParentTvl = true;
       childProtocols.push(childEntry);
     }
 
